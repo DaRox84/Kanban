@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Kanban">
+    <meta name="theme-color" content="#1e1b4b">
+    <title>Personal Kanban</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiUGVyc29uYWwgS2FuYmFuIiwic2hvcnRfbmFtZSI6IkthbmJhbiIsInN0YXJ0X3VybCI6Ii4iLCJkaXNwbGF5Ijoic3RhbmRhbG9uZSIsImJhY2tncm91bmRfY29sb3IiOiIjMWUxYjRiIiwidGhlbWVfY29sb3IiOiIjMWUxYjRiIiwiaWNvbnMiOlt7InNyYyI6ImRhdGE6aW1hZ2Uvc3ZnK3htbCwlM0NzdmcgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnJyB2aWV3Qm94PScwIDAgMTAwIDEwMCclM0UlM0NyZWN0IHdpZHRoPScxMDAnIGhlaWdodD0nMTAwJyBmaWxsPSclMjMxZTFiNGInLyUzRSUzQ3RleHQgeD0nNTAnIHk9JzUwJyBmb250LXNpemU9JzUwJyB0ZXh0LWFuY2hvcj0nbWlkZGxlJyBkb21pbmFudC1iYXNlbGluZT0nbWlkZGxlJyBmaWxsPSclMjNhODU0ZjcnJTNFSyUzQy90ZXh0JTNFJTNDL3N2ZyUzRSIsInNpemVzIjoiNTEyeDUxMiIsInR5cGUiOiJpbWFnZS9zdmcreG1sIn1dfQ==">
+    
+    <!-- Apple Touch Icon -->
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231e1b4b'/%3E%3Ctext x='50' y='50' font-size='50' text-anchor='middle' dominant-baseline='middle' fill='%23a854f7'%3EK%3C/text%3E%3C/svg%3E">
+    
+    <style>
+        * {
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        body {
+            overscroll-behavior: none;
+            touch-action: pan-y;
+        }
+        
+        .dragging {
+            opacity: 0.5;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .card-enter {
+            animation: slideIn 0.3s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script>
+        // Register Service Worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('data:application/javascript;base64,' + btoa(`
+                self.addEventListener('install', (e) => {
+                    self.skipWaiting();
+                });
+                
+                self.addEventListener('activate', (e) => {
+                    self.clients.claim();
+                });
+                
+                self.addEventListener('fetch', (e) => {
+                    e.respondWith(fetch(e.request));
+                });
+            `));
+        }
+
+        // State Management
+        const STORAGE_KEY = 'kanban-board-data';
+        
+        let state = {
+            columns: [
+                {
+                    id: 'backlog',
+                    title: 'Backlog',
+                    cards: [
+                        { id: 1, text: 'Organize workspace', priority: 'low' },
+                        { id: 2, text: 'Learn new skill', priority: 'medium' }
+                    ]
+                },
+                {
+                    id: 'doing',
+                    title: 'Doing',
+                    cards: [
+                        { id: 3, text: 'Current task in progress', priority: 'high' }
+                    ]
+                },
+                {
+                    id: 'done',
+                    title: 'Done',
+                    cards: [
+                        { id: 4, text: 'Completed yesterday', priority: 'medium' }
+                    ]
+                }
+            ],
+            draggedCard: null,
+            draggedFrom: null
+        };
+
+        // Load from localStorage
+        function loadState() {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                try {
+                    const parsed = JSON.parse(saved);
+                    state.columns = parsed.columns;
+                } catch (e) {
+                    console.error('Failed to load state:', e);
+                }
+            }
+        }
+
+        // Save to localStorage
+        function saveState() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                columns: state.columns
+            }));
+        }
+
+        // Icons
+        const icons = {
+            plus: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>',
+            grip: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle></svg>',
+            trash: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>',
+            archive: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>'
+        };
+
+        // Utility Functions
+        function getPriorityColor(priority) {
+            const colors = {
+                high: 'bg-red-100 border-red-300 text-red-800',
+                medium: 'bg-amber-100 border-amber-300 text-amber-800',
+                low: 'bg-emerald-100 border-emerald-300 text-emerald-800'
+            };
+            return colors[priority] || 'bg-gray-100 border-gray-300 text-gray-800';
+        }
+
+        // Event Handlers
+        function handleDragStart(card, columnId) {
+            state.draggedCard = card;
+            state.draggedFrom = columnId;
+            event.target.classList.add('dragging');
+        }
+
+        function handleDragEnd(event) {
+            event.target.classList.remove('dragging');
+        }
+
+        function handleDragOver(event) {
+            event.preventDefault();
+        }
+
+        function handleDrop(columnId) {
+            if (!state.draggedCard || state.draggedFrom === columnId) {
+                state.draggedCard = null;
+                state.draggedFrom = null;
+                return;
+            }
+
+            state.columns = state.columns.map(col => {
+                if (col.id === state.draggedFrom) {
+                    return {
+                        ...col,
+                        cards: col.cards.filter(c => c.id !== state.draggedCard.id)
+                    };
+                }
+                if (col.id === columnId) {
+                    return {
+                        ...col,
+                        cards: [...col.cards, state.draggedCard]
+                    };
+                }
+                return col;
+            });
+
+            state.draggedCard = null;
+            state.draggedFrom = null;
+            saveState();
+            render();
+        }
+
+        function showAddCardInput(columnId) {
+            const input = document.getElementById(`input-${columnId}`);
+            const btn = document.getElementById(`btn-${columnId}`);
+            input.classList.remove('hidden');
+            btn.classList.add('hidden');
+            input.querySelector('textarea').focus();
+        }
+
+        function hideAddCardInput(columnId) {
+            const input = document.getElementById(`input-${columnId}`);
+            const btn = document.getElementById(`btn-${columnId}`);
+            input.classList.add('hidden');
+            btn.classList.remove('hidden');
+            input.querySelector('textarea').value = '';
+        }
+
+        function addCard(columnId) {
+            const textarea = document.querySelector(`#input-${columnId} textarea`);
+            const text = textarea.value.trim();
+            if (!text) return;
+
+            const newCard = {
+                id: Date.now(),
+                text,
+                priority: 'medium'
+            };
+
+            state.columns = state.columns.map(col =>
+                col.id === columnId
+                    ? { ...col, cards: [...col.cards, newCard] }
+                    : col
+            );
+
+            saveState();
+            hideAddCardInput(columnId);
+            render();
+        }
+
+        function deleteCard(columnId, cardId) {
+            if (!confirm('Delete this task?')) return;
+            
+            state.columns = state.columns.map(col =>
+                col.id === columnId
+                    ? { ...col, cards: col.cards.filter(c => c.id !== cardId) }
+                    : col
+            );
+
+            saveState();
+            render();
+        }
+
+        function updatePriority(columnId, cardId) {
+            const priorities = ['low', 'medium', 'high'];
+            state.columns = state.columns.map(col => {
+                if (col.id === columnId) {
+                    return {
+                        ...col,
+                        cards: col.cards.map(card => {
+                            if (card.id === cardId) {
+                                const currentIndex = priorities.indexOf(card.priority);
+                                const nextIndex = (currentIndex + 1) % priorities.length;
+                                return { ...card, priority: priorities[nextIndex] };
+                            }
+                            return card;
+                        })
+                    };
+                }
+                return col;
+            });
+
+            saveState();
+            render();
+        }
+
+        // Render Function
+        function render() {
+            const app = document.getElementById('app');
+            
+            app.innerHTML = `
+                <div class="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 md:p-8">
+                    <div class="max-w-7xl mx-auto">
+                        <!-- Header -->
+                        <div class="mb-8 md:mb-12 text-center">
+                            <h1 class="text-4xl md:text-6xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-purple-400 to-pink-400 mb-3" 
+                                style="font-family: Georgia, serif; letter-spacing: -0.02em;">
+                                Personal Kanban
+                            </h1>
+                            <p class="text-purple-300 text-base md:text-lg opacity-80">Visualize your workflow, limit work in progress</p>
+                        </div>
+
+                        <!-- Board -->
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+                            ${state.columns.map(column => `
+                                <div 
+                                    class="bg-slate-800/50 backdrop-blur-sm rounded-2xl p-4 md:p-6 border border-slate-700/50 shadow-2xl"
+                                    ondragover="handleDragOver(event)"
+                                    ondrop="handleDrop('${column.id}')"
+                                >
+                                    <!-- Column Header -->
+                                    <div class="mb-4 md:mb-6">
+                                        <h2 class="text-xl md:text-2xl font-bold text-white mb-1" style="font-family: Georgia, serif;">
+                                            ${column.title}
+                                        </h2>
+                                        <div class="h-1 w-16 bg-gradient-to-r from-cyan-400 to-purple-400 rounded-full"></div>
+                                        <p class="text-purple-300 text-sm mt-2 opacity-60">${column.cards.length} tasks</p>
+                                    </div>
+
+                                    <!-- Cards -->
+                                    <div class="space-y-3 mb-4 min-h-[150px] md:min-h-[200px]">
+                                        ${column.cards.map(card => `
+                                            <div
+                                                draggable="true"
+                                                ondragstart="handleDragStart(${JSON.stringify(card).replace(/"/g, '&quot;')}, '${column.id}')"
+                                                ondragend="handleDragEnd(event)"
+                                                class="bg-white rounded-xl p-4 cursor-move shadow-lg hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border-l-4 border-purple-400 group card-enter"
+                                            >
+                                                <div class="flex items-start gap-3">
+                                                    <span class="text-gray-300 flex-shrink-0 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                        ${icons.grip}
+                                                    </span>
+                                                    <div class="flex-1 min-w-0">
+                                                        <p class="text-gray-800 font-medium break-words text-sm md:text-base">${card.text}</p>
+                                                        <div class="flex items-center gap-2 mt-3">
+                                                            <button
+                                                                onclick="updatePriority('${column.id}', ${card.id})"
+                                                                class="text-xs px-2 py-1 rounded-full border font-semibold uppercase tracking-wide ${getPriorityColor(card.priority)} transition-colors cursor-pointer"
+                                                            >
+                                                                ${card.priority}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        onclick="deleteCard('${column.id}', ${card.id})"
+                                                        class="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+                                                    >
+                                                        ${icons.trash}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+
+                                    <!-- Add Card Input -->
+                                    <div id="input-${column.id}" class="hidden space-y-2">
+                                        <textarea
+                                            placeholder="Enter task description..."
+                                            class="w-full bg-slate-700 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none text-sm md:text-base"
+                                            rows="2"
+                                            onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); addCard('${column.id}'); } if(event.key==='Escape') hideAddCardInput('${column.id}');"
+                                        ></textarea>
+                                        <div class="flex gap-2">
+                                            <button
+                                                onclick="addCard('${column.id}')"
+                                                class="px-4 py-2 bg-gradient-to-r from-cyan-500 to-purple-500 text-white rounded-lg font-semibold hover:from-cyan-600 hover:to-purple-600 transition-all text-sm"
+                                            >
+                                                Add Task
+                                            </button>
+                                            <button
+                                                onclick="hideAddCardInput('${column.id}')"
+                                                class="px-4 py-2 bg-slate-700 text-purple-300 rounded-lg hover:bg-slate-600 transition-colors text-sm"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <!-- Add Card Button -->
+                                    <button
+                                        id="btn-${column.id}"
+                                        onclick="showAddCardInput('${column.id}')"
+                                        class="w-full py-3 border-2 border-dashed border-slate-600 rounded-xl text-purple-300 hover:border-purple-400 hover:text-purple-400 hover:bg-slate-700/30 transition-all flex items-center justify-center gap-2 font-semibold text-sm md:text-base"
+                                    >
+                                        ${icons.plus}
+                                        Add Task
+                                    </button>
+                                </div>
+                            `).join('')}
+                        </div>
+
+                        <!-- Tips -->
+                        <div class="mt-8 md:mt-12 bg-slate-800/30 backdrop-blur-sm border border-slate-700/50 rounded-xl p-4 md:p-6">
+                            <h3 class="text-white font-bold text-base md:text-lg mb-3 flex items-center gap-2">
+                                ${icons.archive}
+                                Kanban Tips
+                            </h3>
+                            <ul class="text-purple-300 space-y-2 text-sm">
+                                <li>• <strong>Limit WIP:</strong> Keep only 2-3 tasks in "Doing" at once</li>
+                                <li>• <strong>Drag & Drop:</strong> Move cards between columns by dragging</li>
+                                <li>• <strong>Priority:</strong> Click the priority badge to cycle through levels</li>
+                                <li>• <strong>Focus:</strong> Pull from Backlog only when Doing has space</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Initialize
+        loadState();
+        render();
+    </script>
+</body>
+</html>
